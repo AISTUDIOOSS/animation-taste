@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feu de camp dirigé</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d0720; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const W = 1080, H = 1920, TAU = Math.PI * 2;
+// même composition que le premier jet : lune en haut à droite, palmier à gauche,
+// horizon, vague sur le sable, feu en bas au centre
+const HOR = 980, SHORE = 1320, FX = 540, FY = 1600, MX = 800, MY = 330;
+const FPS = 12, T = 6; // dessiné image par image, boucle de 6 s
+
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+const w = (k, t) => TAU * k * t / T; // k tours complets par boucle
+
+const C = {
+  sky: '#1b0e40', skyGlow: '#3a2182', sea: '#22176a', seaLine: '#4a3db0', far: '#120a30',
+  sand: '#2a1540', wet: '#3a2468', palm: '#0c0520', palmRim: '#3a2478',
+  cream: '#f6e7c4', creamDark: '#d9c39a', stone: '#3b2452', stoneDark: '#1c0f2e',
+  log: '#3a1730', logEnd: '#5f2742', logRing: '#2a0f24',
+  orange: '#ff7a1f', yellow: '#ffd23f', red: '#ff3f4a', deep: '#e8451f', pink: '#c2507a', violet: '#7a3aa0'
+};
+
+// ---------- décor fixe, peint une seule fois ----------
+const bg = document.createElement('canvas'); bg.width = W; bg.height = H;
+(function () {
+  const b = bg.getContext('2d'), r = rng(11);
+  b.fillStyle = C.sky; b.fillRect(0, 0, W, H);
+  // lueur de l'horizon, en grain
+  b.fillStyle = C.skyGlow;
+  for (let i = 0; i < 19000; i++) {
+    const u = Math.pow(r(), 2.1), y = HOR - u * 1000, s = 2 + r() * 3;
+    b.globalAlpha = 0.55 * (1 - 0.45 * u); b.fillRect(r() * W, y, s, s);
+  }
+  // grain léger sur tout le ciel, jusqu'en haut
+  b.fillStyle = '#2c1968';
+  for (let i = 0; i < 5200; i++) { const s = 2 + r() * 3; b.globalAlpha = 0.3 + r() * 0.35; b.fillRect(r() * W, r() * (HOR - 200), s, s); }
+  // halo de la lune, en grain
+  b.fillStyle = '#6a55c8';
+  for (let i = 0; i < 7000; i++) {
+    const a = r() * TAU, d = 86 + Math.pow(r(), 1.9) * 280, s = 2 + r() * 3;
+    b.globalAlpha = 0.75 * (1 - (d - 86) / 280); b.fillRect(MX + Math.cos(a) * d, MY + Math.sin(a) * d, s, s);
+  }
+  b.globalAlpha = 1;
+  // lune
+  const MR = 82;
+  b.fillStyle = C.cream; b.beginPath(); b.arc(MX, MY, MR, 0, TAU); b.fill();
+  b.save(); b.beginPath(); b.arc(MX, MY, MR, 0, TAU); b.clip();
+  // mers : grandes taches plus sombres, en aplats irréguliers
+  b.fillStyle = '#e6d3ab';
+  for (const m of [[-30, -22, 34, 26, 0.5], [-8, -40, 24, 16, -0.3], [-44, 14, 22, 30, 0.2], [16, 30, 30, 20, -0.5], [-10, 46, 22, 14, 0.3], [40, -6, 16, 24, 0.1]]) {
+    b.beginPath(); b.ellipse(MX + m[0], MY + m[1], m[2], m[3], m[4], 0, TAU); b.fill();
+  }
+  // ombre du côté gauche, en grain
+  b.fillStyle = C.creamDark;
+  for (let i = 0; i < 1700; i++) { const s = 2 + r() * 3; b.fillRect(MX - MR + Math.pow(r(), 2.4) * MR * 2, MY - MR + r() * MR * 2, s, s); }
+  // cratères : un creux sombre, une ombre d'un côté, un bord clair de l'autre
+  const crat = [[-26, -20, 15], [22, 14, 11], [-6, 38, 8], [36, -30, 7], [-48, 16, 6], [8, -50, 6], [46, 34, 5], [-16, 10, 4.5], [30, -6, 4], [-36, -48, 4], [4, 62, 4], [58, 4, 3.5], [-58, -14, 3.5], [14, -22, 3]];
+  for (const c of crat) {
+    const x = MX + c[0], y = MY + c[1], q = c[2];
+    b.fillStyle = '#fff6dc'; b.beginPath(); b.arc(x + q * 0.16, y + q * 0.16, q * 1.08, 0, TAU); b.fill();
+    b.fillStyle = C.creamDark; b.beginPath(); b.arc(x, y, q, 0, TAU); b.fill();
+    b.fillStyle = '#bfa67c'; b.beginPath(); b.arc(x, y, q, 0, TAU); b.arc(x + q * 0.42, y + q * 0.42, q * 1.02, 0, TAU, true); b.fill('evenodd');
+  }
+  // petits éclats clairs qui partent du grand cratère
+  b.strokeStyle = '#fff6dc'; b.lineWidth = 2; b.lineCap = 'round'; b.globalAlpha = 0.7;
+  for (let i = 0; i < 7; i++) { const a = 0.4 + i * 0.9, d0 = 20, d1 = 30 + (i % 3) * 9; b.beginPath(); b.moveTo(MX - 26 + Math.cos(a) * d0, MY - 20 + Math.sin(a) * d0); b.lineTo(MX - 26 + Math.cos(a) * d1, MY - 20 + Math.sin(a) * d1); b.stroke(); }
+  b.globalAlpha = 1;
+  b.restore();
+  // pointe de terre au loin
+  b.fillStyle = C.far;
+  b.beginPath(); b.moveTo(0, HOR + 2); b.lineTo(0, HOR - 50);
+  b.quadraticCurveTo(100, HOR - 86, 200, HOR - 44); b.quadraticCurveTo(280, HOR - 62, 350, HOR - 22);
+  b.quadraticCurveTo(410, HOR - 6, 480, HOR + 2); b.closePath(); b.fill();
+  // sable
+  b.fillStyle = C.sand; b.fillRect(0, HOR, W, H - HOR);
+  // sable mouillé près de l'eau
+  b.fillStyle = C.wet;
+  for (let i = 0; i < 9000; i++) {
+    const y = SHORE - 30 + Math.pow(r(), 1.8) * 190, s = 2 + r() * 3;
+    b.globalAlpha = 0.7 * (1 - (y - SHORE + 30) / 190); b.fillRect(r() * W, y, s, s);
+  }
+  // grain du sable
+  b.fillStyle = '#1a0b2a';
+  for (let i = 0; i < 5000; i++) { const s = 2 + r() * 3; b.globalAlpha = 0.5; b.fillRect(r() * W, SHORE + 60 + r() * (H - SHORE - 60), s, s); }
+  b.globalAlpha = 1;
+})();
+
+// ---------- éléments animés ----------
+const r0 = rng(7);
+const stars = Array.from({ length: 80 }, () => ({ x: r0() * W, y: r0() * (HOR - 160), r: 2 + r0() * 3, k: 1 + Math.floor(r0() * 5), p: r0() * TAU }));
+const bigStars = [[150, 210], [430, 120], [610, 470], [960, 620], [330, 380], [1000, 150]];
+const glints = Array.from({ length: 26 }, () => ({ d: Math.pow(r0(), 0.85), ox: r0() - 0.5, sz: 0.55 + r0() * 0.75, k: 1 + Math.floor(r0() * 4), p: r0() * TAU }));
+const sparkle = Array.from({ length: 300 }, () => ({ d: Math.pow(r0(), 0.8), ox: r0() - 0.5, s: 2 + r0() * 3, k: 1 + Math.floor(r0() * 5), p: r0() * TAU }));
+const foamDots = Array.from({ length: 54 }, () => ({ x: r0() * W, o: 8 + Math.pow(r0(), 1.6) * 80, s: 2.5 + r0() * 5, k: 1 + Math.floor(r0() * 3), p: r0() * TAU }));
+const r1 = rng(911);
+glints.forEach(q => { q.sz = 0.25 + Math.pow(r1(), 1.8) * 1.15; q.hh = 0.5 + r1(); q.ox2 = r1() - 0.5; q.rot = (r1() - 0.5) * 0.16; });
+const foamHoles = Array.from({ length: 46 }, () => ({ x: r1() * W, u: 0.3 + r1() * 0.45, s: 3 + r1() * 6, p: r1() * TAU }));
+const foamPatch = Array.from({ length: 17 }, () => ({ x: r1() * W, o: 18 + Math.pow(r1(), 1.4) * 75, wd: 26 + Math.pow(r1(), 1.6) * 120, k: 1 + Math.floor(r1() * 2), p: r1() * TAU }));
+const lace = [0, 1, 2].map(j => { const a = []; let x = -60 - r1() * 60; while (x < W + 60) { const wd = (50 + r1() * 90) * (1 + j * 0.3); a.push({ x, wd, sag: 8 + r1() * 14, gap: r1() < 0.28, p: r1() * TAU }); x += wd; } return a; });
+const grass = Array.from({ length: 26 }, () => ({ x: 860 + Math.pow(r1(), 0.7) * 240, h: 150 + r1() * 260, lean: (r1() - 0.6) * 160, wd: 7 + r1() * 8, p: r1() * TAU }));
+const swell = Array.from({ length: 16 }, () => ({ x: r0() * W, y: HOR + 26 + r0() * 250, l: 46 + r0() * 90, k: 1 + Math.floor(r0() * 3), p: r0() * TAU }));
+const light = [];
+for (let i = 0; i < 7000; i++) light.push({ a: r0() * TAU, d: Math.pow(r0(), 0.7), s: 2 + r0() * 3, k: r0() });
+const halo = [];
+for (let i = 0; i < 6000; i++) halo.push({ a: r0() * TAU, d: Math.pow(r0(), 0.75), s: 2 + r0() * 3, k: r0() });
+const stones = Array.from({ length: 11 }, (_, i) => ({ an: i / 11 * TAU + 0.28, rx: 38 + r0() * 14, ry: 25 + r0() * 8, rot: r0() * 0.5 - 0.25 }))
+  .sort((p, q) => Math.sin(p.an) - Math.sin(q.an));
+const embers = Array.from({ length: 22 }, () => ({ o: r0(), k: 2 + Math.floor(r0() * 3), x: (r0() - 0.5) * 120, sw: 20 + r0() * 50, s: 4 + r0() * 5, h: 500 + r0() * 500 }));
+
+function shoreY(x, t) {
+  return SHORE + 38 * Math.sin(w(1, t) + 0.6 * Math.sin(w(1, t)))
+    + 40 * Math.abs(Math.sin(x * 0.0056 + 0.7 + 0.35 * Math.sin(w(1, t))))
+    + 15 * Math.abs(Math.sin(x * 0.0137 + 2.1 - 0.5 * Math.sin(w(1, t) + 1)))
+    + 14 * Math.sin(x * 0.003 + w(1, t) + 2) + 0.045 * (x - 540);
+}
+// tache de lumière sur l'eau : une lentille aux bords irréguliers
+function glint(x, y, wd, h, p, ph, bend) {
+  const N = 14; g.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const u = i / N, e = Math.pow(Math.sin(Math.PI * u), 0.6);
+    const yy = y - h * e * (1 + 0.6 * Math.sin(u * 7 + p + ph) + 0.25 * Math.sin(u * 17 + p * 3)) + bend * Math.sin(u * 5 + p);
+    if (i) g.lineTo(x - wd / 2 + u * wd, yy); else g.moveTo(x - wd / 2, yy);
+  }
+  for (let i = N; i >= 0; i--) {
+    const u = i / N, e = Math.pow(Math.sin(Math.PI * u), 0.6);
+    g.lineTo(x - wd / 2 + u * wd, y + h * 0.8 * e * (1 + 0.6 * Math.sin(u * 6 + p * 2 - ph) + 0.25 * Math.sin(u * 15 + p)) + bend * Math.sin(u * 5 + p));
+  }
+  g.closePath(); g.fill();
+}
+
+function grainIn(path, n, seed, color, bias, box) {
+  g.save(); g.clip(path); g.fillStyle = color;
+  const r = rng(seed);
+  for (let i = 0; i < n; i++) {
+    const u = Math.pow(r(), bias), v = r(), s = 2 + r() * 3;
+    g.fillRect(box.x + box.w * (1 - u), box.y + box.h * v, s, s);
+  }
+  g.restore();
+}
+
+// ---------- flamme ----------
+// Une ligne centrale qui ondule de bas en haut (l'onde monte, la pointe fouette),
+// puis l'épaisseur posée de chaque côté de cette ligne : la flamme se tord au lieu de gonfler.
+function flame(t, o) {
+  const N = 56, sp = [];
+  const tall = o.tall * (1 + 0.07 * Math.sin(w(3, t) + o.ph));
+  for (let i = 0; i <= N; i++) {
+    const s = i / N;
+    const x = o.x + o.lean * Math.pow(s, 1.7)
+      + o.amp * Math.pow(s, 1.15) * Math.sin(TAU * o.k * s - w(o.sp, t) + o.ph)
+      + o.amp * 0.3 * s * Math.sin(TAU * o.k * 2.1 * s - w(o.sp * 2, t) + o.ph * 1.7);
+    sp.push([x, o.base - s * tall]);
+  }
+  const L = [], R = [];
+  for (let i = 0; i <= N; i++) {
+    const s = i / N, a = sp[Math.max(0, i - 1)], b = sp[Math.min(N, i + 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const n = Math.hypot(tx, ty) || 1; tx /= n; ty /= n;
+    const prof = Math.pow(1 - s, 0.85) * (0.62 + 0.38 * Math.sin(Math.PI * Math.pow(s, 0.6)));
+    const hw = o.wide * prof * (1 + 0.2 * Math.sin(TAU * 1.4 * s - w(o.sp, t) + o.ph + 1));
+    L.push([sp[i][0] + ty * hw, sp[i][1] - tx * hw]); R.push([sp[i][0] - ty * hw, sp[i][1] + tx * hw]);
+  }
+  const p = new Path2D();
+  p.moveTo(L[0][0], L[0][1]);
+  for (const q of L) p.lineTo(q[0], q[1]);
+  for (let i = N; i >= 0; i--) p.lineTo(R[i][0], R[i][1]);
+  p.closePath();
+  p.tip = sp[N];
+  return p;
+}
+function union(...paths) { const u = new Path2D(); for (const p of paths) u.addPath(p); return u; }
+
+function log(x, y, len, th, ang, seed) {
+  g.save(); g.translate(x, y); g.rotate(ang);
+  const body = new Path2D(); body.roundRect(-len / 2, -th / 2, len, th, th / 2);
+  g.fillStyle = C.log; g.fill(body);
+  g.save(); g.clip(body);
+  const r = rng(seed); g.fillStyle = '#ff9a3c';
+  for (let i = 0; i < 260; i++) { const s = 2 + r() * 3; g.fillRect(-len / 2 + r() * len, -th / 2 + Math.pow(r(), 2.2) * th * 0.5, s, s); }
+  g.restore();
+  g.fillStyle = C.logEnd; g.beginPath(); g.ellipse(len / 2 - th * 0.42, 0, th * 0.36, th * 0.46, 0, 0, TAU); g.fill();
+  g.strokeStyle = C.logRing; g.lineWidth = 3;
+  for (const k of [0.3, 0.16]) { g.beginPath(); g.ellipse(len / 2 - th * 0.42, 0, th * k * 0.8, th * k, 0, 0, TAU); g.stroke(); }
+  g.restore();
+}
+
+function stone(s, f) {
+  const x = FX + Math.cos(s.an) * 215, y = FY + 22 + Math.sin(s.an) * 66;
+  g.save(); g.translate(x, y); g.rotate(s.rot);
+  g.fillStyle = C.stoneDark; g.beginPath(); g.ellipse(Math.cos(s.an) * 12, s.ry * 0.75, s.rx * 1.08, s.ry * 0.5, 0, 0, TAU); g.fill();
+  const body = new Path2D(); body.ellipse(0, 0, s.rx, s.ry, 0, 0, TAU);
+  g.fillStyle = C.stone; g.fill(body);
+  // côté éclairé par le feu, en grain
+  g.save(); g.clip(body);
+  const r = rng(Math.round(s.an * 1000)), dx = -Math.cos(s.an), front = Math.sin(s.an) > 0;
+  g.fillStyle = front ? C.pink : '#ff9a3c'; g.globalAlpha = f;
+  for (let i = 0; i < (front ? 60 : 150); i++) {
+    const u = Math.pow(r(), 2), sz = 2 + r() * 3;
+    g.fillRect(dx * s.rx * (1 - u * 1.6) + (r() - 0.5) * s.rx * 0.9, -s.ry + r() * s.ry * (front ? 0.7 : 1.5), sz, sz);
+  }
+  g.restore(); g.restore();
+}
+
+function frond(cx, cy, a, Lg, dir, sway, color, rim, lit, seed) {
+  const ex = cx + Math.cos(a) * Lg, ey = cy + Math.sin(a) * Lg * 0.62 + Lg * 0.5;
+  const mx = cx + Math.cos(a) * Lg * 0.52, my = cy + Math.sin(a) * Lg * 0.72 - Lg * 0.3;
+  const pt = s => { const u = 1 - s; return [u * u * cx + 2 * u * s * mx + s * s * ex, u * u * cy + 2 * u * s * my + s * s * ey]; };
+  const tan = s => { const u = 1 - s; let x = 2 * u * (mx - cx) + 2 * s * (ex - mx), y = 2 * u * (my - cy) + 2 * s * (ey - my); const n = Math.hypot(x, y) || 1; return [x / n, y / n]; };
+  const NT = 15;
+  g.fillStyle = color; const fp = new Path2D(); fp.moveTo(cx, cy);
+  // dessus : petites dents
+  for (let j = 0; j < NT; j++) {
+    const s0 = 0.05 + 0.95 * j / NT, s1 = 0.05 + 0.95 * (j + 0.55) / NT, tg = tan(s1), q = pt(s1), v = pt(s0);
+    const ln = (30 * Math.sin(Math.PI * Math.pow(s1, 0.7)) + 5);
+    fp.lineTo(v[0], v[1]);
+    fp.lineTo(q[0] - dir * -tg[1] * ln + tg[0] * ln * 0.9, q[1] - dir * tg[0] * ln + tg[1] * ln * 0.9);
+  }
+  fp.lineTo(ex, ey);
+  // dessous : longues folioles qui pendent
+  for (let j = NT; j > 0; j--) {
+    const s0 = 0.05 + 0.95 * j / NT, s1 = 0.05 + 0.95 * (j - 0.45) / NT, tg = tan(s1), q = pt(s1), v = pt(s0);
+    const ln = (92 * Math.sin(Math.PI * Math.pow(s1, 0.75)) + 14) * (Lg / 400);
+    fp.lineTo(v[0], v[1] + 3);
+    fp.lineTo(q[0] + dir * -tg[1] * ln * 0.55 + tg[0] * ln * 0.45 + sway * 260 * s1, q[1] + dir * tg[0] * ln * 0.55 + tg[1] * ln * 0.45 + ln * 0.5);
+  }
+  fp.closePath(); g.fill(fp);
+  if (lit) {
+    // le feu éclaire le dessous des palmes, la lune le dessus : en grain
+    g.save(); g.clip(fp);
+    const r = rng(5000 + (seed || 0) * 97);
+    for (let i = 0; i < 260; i++) {
+      const s = 0.08 + r() * 0.92, q = pt(s), sz = 2 + r() * 3;
+      const x = q[0] + (r() - 0.5) * 26, y = q[1] + 6 + Math.pow(r(), 1.4) * 70 * (Lg / 400);
+      const k = Math.max(0, 1 - Math.hypot(x - FX, y - (FY - 220)) / 1100);
+      g.fillStyle = r() < 0.55 ? '#ff8a3a' : C.pink; g.globalAlpha = Math.min(1, k * k * 3.5) * lit;
+      g.fillRect(x, y, sz, sz);
+    }
+    g.fillStyle = '#9d8cf0';
+    for (let i = 0; i < 110; i++) {
+      const s = 0.1 + r() * 0.9, q = pt(s), sz = 2 + r() * 2.5;
+      g.globalAlpha = dir > 0 ? 0.55 : 0.28;
+      g.fillRect(q[0] + (r() - 0.5) * 14, q[1] - 3 - Math.pow(r(), 2) * 20, sz, sz);
+    }
+    g.restore(); g.globalAlpha = 1;
+  }
+
+  if (rim) { g.strokeStyle = rim; g.lineWidth = 3; g.lineCap = 'round'; g.beginPath(); g.moveTo(cx, cy); g.quadraticCurveTo(mx, my, ex, ey); g.stroke(); }
+}
+
+function palm(t, f) {
+  const sway = Math.sin(w(1, t)) * 0.03 + Math.sin(w(2, t) + 1) * 0.012;
+  const bx = 8, by = 1540, kx = 70, ky = 1040, cx = 268 + sway * 480, cy = 640;
+  const P = s => { const u = 1 - s; return [u * u * bx + 2 * u * s * kx + s * s * cx, u * u * by + 2 * u * s * ky + s * s * cy]; };
+  // palmes du fond, plus claires
+  const back = [[-2.7, 330], [-1.5, 300], [-0.95, 370], [-0.2, 360], [3.3, 300]];
+  back.forEach((f, i) => frond(cx, cy, f[0] + sway * (2 + i * 0.3), f[1], Math.cos(f[0]) >= 0 ? 1 : -1, sway, '#1a0d44', null));
+  // tronc : large à la base, fin en haut
+  const L = [], R = [], NS = 30;
+  for (let i = 0; i <= NS; i++) {
+    const s = i / NS, a = P(Math.max(0, s - 0.02)), b = P(Math.min(1, s + 0.02));
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const n = Math.hypot(tx, ty); tx /= n; ty /= n;
+    const hw = 50 - 34 * Math.pow(s, 0.7) + 5 * Math.sin(s * 15 * Math.PI) * (1 - s), q = P(s);
+    L.push([q[0] + ty * hw, q[1] - tx * hw]); R.push([q[0] - ty * hw, q[1] + tx * hw]);
+  }
+  const trunk = new Path2D(); trunk.moveTo(L[0][0], L[0][1]);
+  for (const q of L) trunk.lineTo(q[0], q[1]);
+  for (let i = NS; i >= 0; i--) trunk.lineTo(R[i][0], R[i][1]);
+  trunk.closePath(); g.fillStyle = C.palm; g.fill(trunk);
+  g.save(); g.clip(trunk);
+  // lumière du feu sur le côté droit du tronc, en grain
+  const r = rng(77);
+  for (let i = 0; i < 1900; i++) {
+    const s = Math.pow(r(), 1.5) * 0.92, q = P(s), u = Math.pow(r(), 2.2), sz = 2 + r() * 3;
+    g.fillStyle = r() < 0.5 ? '#ff8a3a' : C.pink; g.globalAlpha = Math.min(1, Math.pow(1 - s / 0.92, 0.8) * f * 1.08);
+    g.fillRect(q[0] + (50 - 34 * Math.pow(s, 0.7)) * (1 - u * 1.3) - 2, q[1] + (r() - 0.5) * 30, sz, sz);
+  }
+  // liseré chaud sur le bord du tronc, côté feu
+  g.strokeStyle = '#ff9a3c'; g.lineWidth = 7; g.lineCap = 'round';
+  for (let i = 0; i < 17; i++) { g.globalAlpha = Math.pow(1 - i / 17, 1.3) * 0.95 * f; g.beginPath(); g.moveTo(R[i][0] - 2, R[i][1]); g.lineTo(R[i + 1][0] - 2, R[i + 1][1]); g.stroke(); }
+  g.globalAlpha = 1;
+  // anneaux
+  g.strokeStyle = C.palmRim; g.lineWidth = 4; g.lineCap = 'round';
+  for (let i = 1; i < 15; i++) {
+    const s = i / 15, q = P(s), hw = 52 - 34 * Math.pow(s, 0.7);
+    g.beginPath(); g.moveTo(q[0] - hw, q[1] + 8); g.quadraticCurveTo(q[0], q[1] + 16, q[0] + hw, q[1] - 6); g.stroke();
+  }
+  g.restore();
+  // palmes de devant
+  const fr = [[-2.95, 400], [-2.35, 420], [-1.85, 360], [-1.2, 380], [-0.65, 440], [-0.15, 430], [0.4, 360], [3.6, 330]];
+  fr.forEach((fd, i) => frond(cx, cy, fd[0] + sway * (1.5 + i * 0.25) + 0.02 * Math.sin(w(2, t) + i), fd[1], Math.cos(fd[0]) >= 0 ? 1 : -1, sway, C.palm, C.palmRim, f, i + 1));
+  // noix de coco
+  g.fillStyle = C.palm;
+  for (const c of [[-16, 26], [14, 30], [0, 48]]) { g.beginPath(); g.arc(cx + c[0], cy + c[1], 19, 0, TAU); g.fill(); }
+  g.fillStyle = C.palmRim;
+  for (const c of [[-10, 20], [20, 24], [6, 42]]) { g.beginPath(); g.arc(cx + c[0], cy + c[1], 5, 0, TAU); g.fill(); }
+}
+
+function draw(now) {
+  const fi = Math.floor(now / 1000 * FPS) % (T * FPS), t = fi / FPS;
+  const f = 0.88 + 0.12 * Math.sin(w(9, t)) * Math.sin(w(4, t) + 1);
+  g.globalAlpha = 1; g.drawImage(bg, 0, 0);
+
+  // étoiles
+  g.fillStyle = '#e9ddff';
+  for (const s of stars) { g.globalAlpha = 0.3 + 0.6 * (0.5 + 0.5 * Math.sin(w(s.k, t) + s.p)); g.fillRect(s.x, s.y, s.r, s.r); }
+  bigStars.forEach((s, i) => {
+    const k = 9 + 6 * (0.5 + 0.5 * Math.sin(w(2, t) + i * 1.9));
+    g.globalAlpha = 0.9; g.beginPath();
+    g.moveTo(s[0], s[1] - k); g.quadraticCurveTo(s[0], s[1], s[0] + k, s[1]); g.quadraticCurveTo(s[0], s[1], s[0], s[1] + k);
+    g.quadraticCurveTo(s[0], s[1], s[0] - k, s[1]); g.quadraticCurveTo(s[0], s[1], s[0], s[1] - k); g.fill();
+  });
+  g.globalAlpha = 1;
+
+  // mer, jusqu'à la vague
+  const sea = new Path2D(); sea.moveTo(0, HOR); sea.lineTo(W, HOR);
+  for (let x = W; x >= 0; x -= 6) sea.lineTo(x, shoreY(x, t));
+  sea.closePath(); g.fillStyle = C.sea; g.fill(sea);
+  g.save(); g.clip(sea); g.lineCap = 'round';
+  // houle : petits traits courbes
+  g.strokeStyle = C.seaLine; g.lineWidth = 5;
+  for (const s of swell) {
+    const x = s.x + 16 * Math.sin(w(s.k, t) + s.p), d = (s.y - HOR) / 300, l = s.l * (0.6 + d);
+    g.globalAlpha = 0.35 + 0.4 * (0.5 + 0.5 * Math.sin(w(s.k, t) + s.p));
+    g.beginPath(); g.moveTo(x - l / 2, s.y); g.quadraticCurveTo(x, s.y - 7, x + l / 2, s.y); g.stroke();
+  }
+  // fil de lumière sur l'horizon, sous la lune
+  g.fillStyle = '#8f7fe0';
+  { const rh = rng(57); for (let i = 0; i < 260; i++) { const d = (rh() + rh() - 1) * 300, sz = 2 + rh() * 2; g.globalAlpha = 0.7 * (1 - Math.abs(d) / 300); g.fillRect(MX + d, HOR + rh() * 5, sz * (1 + rh() * 3), sz); } }
+  // une deuxième vague qui arrive, plus loin
+  g.strokeStyle = C.cream;
+  for (let x = -10; x < W; x += 8) {
+    const vis = Math.sin(x * 0.013 + w(1, t) + 2) + 0.4 * Math.sin(x * 0.031 - w(1, t));
+    if (vis < 0.25) continue;
+    const yy = q => SHORE - 150 + 12 * Math.sin(w(1, t) + 1) + 10 * Math.sin(q * 0.008 + w(1, t)) + 5 * Math.sin(q * 0.023 - w(1, t));
+    g.globalAlpha = Math.min(0.55, vis * 0.45); g.lineWidth = 2.5 + 3 * Math.min(1, vis);
+    g.beginPath(); g.moveTo(x, yy(x)); g.lineTo(x + 8, yy(x + 8)); g.stroke();
+  }
+  // reflet de la lune : taches irrégulières qui s'élargissent vers le rivage, plus un semis de grain
+  g.fillStyle = C.cream;
+  const span = SHORE - HOR - 40;
+  for (const q of sparkle) {
+    g.globalAlpha = (0.12 + 0.5 * (0.5 + 0.5 * Math.sin(w(q.k, t) + q.p))) * (1 - q.d * 0.4);
+    g.fillRect(MX - q.d * 40 + q.ox * (60 + q.d * 330), HOR + 8 + q.d * span, q.s, q.s);
+  }
+  for (const q of glints) {
+    const a = 0.5 + 0.5 * Math.sin(w(q.k, t) + q.p);
+    const x = MX - q.d * 40 + (q.ox * 0.55 + q.ox2 * 0.45) * (44 + q.d * 270) + 12 * Math.sin(w(q.k, t) + q.p * 2);
+    g.globalAlpha = (0.72 - q.d * 0.28) * (0.4 + 0.6 * a);
+    g.save(); g.translate(x, HOR + 14 + q.d * span); g.rotate(q.rot);
+    glint(0, 0, (14 + q.d * 92) * q.sz * (0.5 + 0.5 * a), (2.2 + q.d * 5) * q.hh, q.p, w(q.k, t), 7 * q.d);
+    g.restore();
+  }
+  // reflet du feu sur l'eau
+  g.fillStyle = '#ff9a3c';
+  for (let i = 0; i < 7; i++) {
+    const a = 0.5 + 0.5 * Math.sin(w(2 + (i % 3), t) + i * 1.7);
+    g.globalAlpha = (0.6 - i * 0.07) * f;
+    glint(FX + 26 * Math.sin(i * 2.3) + 10 * Math.sin(w(1, t) + i), shoreY(FX, t) - 44 - i * 30, (150 - i * 17) * (0.5 + 0.5 * a), 7 - i * 0.5, i * 1.9, w(1 + (i % 3), t), 3);
+  }
+  g.restore(); g.globalAlpha = 1;
+  // ---------- écume, en couches ----------
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  const th = x => {
+    const lobe = Math.pow(Math.abs(Math.sin(x * 0.0115 + 0.6 * Math.sin(w(1, t)) + 1.3)), 1.6);
+    return Math.max(3, 5 + 30 * lobe * (0.6 + 0.4 * Math.sin(x * 0.004 + 2)) + 7 * Math.sin(x * 0.043 - w(1, t) + 1) + 4 * Math.sin(x * 0.11 + w(2, t)));
+  };
+  // bord avant : des lobes ronds qui avancent sur le sable
+  const low = x => shoreY(x, t) + 5 + (15 + 8 * Math.sin(x * 0.006 + 1)) * Math.abs(Math.sin(x * 0.038 + 0.4 * Math.sin(w(1, t)) + 0.8 * Math.sin(x * 0.011)));
+  const band = (lo, hi, st) => { const q = new Path2D(); for (let x = -20; x <= W + 20; x += st) { if (x <= -20) q.moveTo(x, lo(x)); else q.lineTo(x, lo(x)); } for (let x = W + 20; x >= -20; x -= st) q.lineTo(x, hi(x)); q.closePath(); return q; };
+  // fine pellicule d'eau qui glisse sur le sable devant l'écume
+  g.fillStyle = '#6a55c8'; g.globalAlpha = 0.3;
+  g.fill(band(x => low(x) + 20 + 14 * Math.sin(x * 0.009 + w(1, t)) + 6 * Math.sin(x * 0.027 + 1), low, 4));
+  // trace humide laissée par la vague précédente
+  g.strokeStyle = '#5a44a8'; g.lineWidth = 4; g.globalAlpha = 0.5; g.beginPath();
+  for (let x = -20; x <= W + 20; x += 6) { const y = shoreY(x, T / 4) + 58; if (x <= -20) g.moveTo(x, y); else g.lineTo(x, y); }
+  g.stroke();
+  // voile d'écume plus pâle derrière la bande
+  g.fillStyle = '#a99be8'; g.globalAlpha = 0.5;
+  g.fill(band(low, x => shoreY(x, t) - th(x) * 1.7 - 10 - 6 * Math.sin(x * 0.019 + w(1, t)), 4));
+  // dentelle : des guirlandes d'écume qui traînent derrière la vague
+  g.strokeStyle = C.cream;
+  lace.forEach((row, j) => {
+    const off = 30 + j * 32, dx = 14 * Math.sin(w(1, t) + j * 1.3);
+    const yy = x => shoreY(x, t) - th(x) * 0.5 - off - 6 * Math.sin(x * 0.01 + w(1, t) + j);
+    g.lineWidth = 4.5 - j;
+    for (const c of row) {
+      if (c.gap) continue;
+      const x0 = c.x + dx, x1 = x0 + c.wd;
+      g.globalAlpha = (0.55 - j * 0.15) * (0.55 + 0.45 * Math.sin(w(1, t) + c.p));
+      g.beginPath(); g.moveTo(x0, yy(x0)); g.quadraticCurveTo((x0 + x1) / 2, yy((x0 + x1) / 2) + c.sag * 2, x1, yy(x1)); g.stroke();
+    }
+  });
+  // ombre de l'écume sur le sable
+  g.strokeStyle = '#140a2e'; g.lineWidth = 6; g.globalAlpha = 0.4; g.beginPath();
+  for (let x = -20; x <= W + 20; x += 4) { if (x <= -20) g.moveTo(x, low(x) + 5); else g.lineTo(x, low(x) + 5); }
+  g.stroke();
+  // la bande d'écume
+  const foam = band(low, x => shoreY(x, t) - th(x), 3);
+  g.fillStyle = '#b3a4ee'; g.globalAlpha = 0.6; g.fill(foam);
+  // liseré clair, fin et d'épaisseur variable, seulement sur le bord avant
+  g.fillStyle = C.cream; g.globalAlpha = 0.92;
+  g.fill(band(low, x => low(x) - Math.max(1.5, 2 + 4.5 * Math.pow(Math.abs(Math.sin(x * 0.017 + 0.5 * Math.sin(w(1, t)) + 2)), 2) + 1.5 * Math.sin(x * 0.07 + w(1, t))), 3));
+  g.globalAlpha = 1;
+  // trous dans l'écume, là où elle est épaisse
+  g.fillStyle = '#5d4abf'; g.globalAlpha = 0.55;
+  for (const h of foamHoles) {
+    const k = th(h.x); if (k < 18) continue;
+    const sc = Math.min(1, (k - 14) / 18) * (0.7 + 0.3 * Math.sin(w(1, t) + h.p));
+    g.beginPath(); g.ellipse(h.x, shoreY(h.x, t) - k * h.u, h.s * 1.6 * sc, h.s * 0.7 * sc, 0, 0, TAU); g.fill();
+  }
+  // le feu teinte l'écume devant lui
+  g.save(); g.clip(foam);
+  const rf = rng(31);
+  for (let i = 0; i < 700; i++) {
+    const x = FX + (rf() - 0.5) * 760, sz = 2 + rf() * 3, y = shoreY(x, t) + 14 - rf() * 50;
+    g.fillStyle = rf() < 0.6 ? '#ff9a3c' : C.pink; g.globalAlpha = Math.max(0, 1 - Math.abs(x - FX) / 400) * 0.7 * f;
+    g.fillRect(x, y, sz, sz);
+  }
+  g.restore();
+  // lambeaux d'écume détachés derrière la vague
+  g.fillStyle = C.cream;
+  for (const d of foamPatch) {
+    const x = d.x + 10 * Math.sin(w(d.k, t) + d.p), a = 0.5 + 0.5 * Math.sin(w(d.k, t) + d.p * 2);
+    g.globalAlpha = 0.25 + 0.45 * a;
+    glint(x, shoreY(x, t) - th(x) - d.o, d.wd * (0.6 + 0.4 * a), 2.5 + d.wd * 0.035, d.p, w(d.k, t), 4);
+  }
+  for (const d of foamDots) {
+    const x = d.x + 8 * Math.sin(w(d.k, t) + d.p);
+    g.globalAlpha = 0.35 + 0.5 * (0.5 + 0.5 * Math.sin(w(d.k, t) + d.p * 3));
+    g.beginPath(); g.arc(x, shoreY(x, t) - th(x) - d.o, d.s, 0, TAU); g.fill();
+  }
+  g.globalAlpha = 1;
+
+  // lumière du feu sur le sable, en grain
+  for (const s of light) {
+    const x = FX + Math.cos(s.a) * s.d * 610, y = FY + 40 + Math.sin(s.a) * s.d * 206;
+    g.fillStyle = s.d < 0.32 ? '#ff8a3a' : (s.d < 0.6 ? (s.k < 0.55 ? C.pink : '#ff8a3a') : (s.k < 0.5 ? C.pink : C.violet));
+    g.globalAlpha = Math.min(1, (1 - s.d) * 1.28) * f; g.fillRect(x, y, s.s, s.s);
+  }
+  // halo dans l'air
+  for (const h of halo) {
+    const x = FX + Math.cos(h.a) * h.d * 465, y = FY - 230 + Math.sin(h.a) * h.d * 505;
+    g.fillStyle = h.d < 0.4 ? C.pink : (h.k < 0.5 ? C.violet : '#5a2ca6');
+    g.globalAlpha = (1 - h.d) * 0.77 * f; g.fillRect(x, y, h.s, h.s);
+  }
+  g.globalAlpha = 1;
+
+  palm(t, f);
+
+  // fumée : un ruban pâle qui monte en se tordant
+  const smoke = flame(t, { x: FX + 30, base: FY - 330, wide: 34, tall: 760, lean: 170, amp: 80, k: 0.9, sp: 3, ph: 1 });
+  g.fillStyle = '#7a66d8'; g.globalAlpha = 0.16; g.fill(smoke); g.globalAlpha = 1;
+
+  // pierres du fond, bûches du fond
+  for (const s of stones) if (Math.sin(s.an) < 0) stone(s, f);
+  log(FX - 70, FY - 4, 300, 52, 0.3, 3);
+  log(FX + 70, FY - 4, 300, 52, Math.PI - 0.32, 5);
+
+  // flammes : trois couleurs, chaque couche suit la précédente avec un léger retard
+  const base = FY - 6;
+  const gust = d => 46 * Math.sin(w(1, t) - d) + 18 * Math.sin(w(2, t) - d * 2 + 1);
+  const o1 = flame(t, { x: FX, base, wide: 138, tall: 600, lean: 34 + gust(0), amp: 58, k: 1.1, sp: 6, ph: 0 });
+  const o2 = flame(t, { x: FX - 82, base, wide: 62, tall: 330, lean: -30 + gust(0.2), amp: 32, k: 1.3, sp: 6, ph: 2.1 });
+  const o3 = flame(t, { x: FX + 86, base, wide: 56, tall: 270, lean: 40 + gust(0.3), amp: 28, k: 1.2, sp: 8, ph: 4.0 });
+  const outer = union(o1, o2, o3);
+  g.fillStyle = C.orange; g.fill(outer);
+  grainIn(outer, 1800, fi * 7 + 1, C.deep, 2.4, { x: FX + 260, y: base - 680, w: -520, h: 700 });
+  grainIn(outer, 1500, fi * 5 + 9, '#ffb03a', 2.2, { x: FX - 260, y: base - 680, w: 520, h: 700 });
+  g.save(); g.clip(outer);
+  const m1 = flame(t, { x: FX + 4, base, wide: 88, tall: 430, lean: 28 + gust(0.45), amp: 46, k: 1.1, sp: 6, ph: 0.8 });
+  const m2 = flame(t, { x: FX - 56, base, wide: 36, tall: 215, lean: -22 + gust(0.5), amp: 24, k: 1.3, sp: 6, ph: 2.9 });
+  const mid = union(m1, m2);
+  g.fillStyle = C.yellow; g.fill(mid);
+  g.clip(mid);
+  const inner = flame(t, { x: FX + 8, base, wide: 50, tall: 275, lean: 22 + gust(0.9), amp: 34, k: 1.1, sp: 6, ph: 1.6 });
+  g.fillStyle = C.red; g.fill(inner);
+  grainIn(inner, 420, fi * 3 + 4, '#ff8a5a', 2.2, { x: FX - 90, y: base - 300, w: 200, h: 310 });
+  g.restore();
+
+  // flammèches : la pointe se détache et monte en tournant
+  for (let i = 0; i < 2; i++) {
+    const u = ((t / T) * 3 + i * 0.5) % 1, k = Math.pow(1 - u, 1.4);
+    if (k < 0.04) continue;
+    const x = o1.tip[0] + 22 * Math.sin(u * 5 + i * 2) + 34 * u, y = o1.tip[1] + 6 - u * 230;
+    g.fillStyle = i ? C.yellow : C.orange;
+    g.fill(flame(t, { x, base: y, wide: 20 * k + 3, tall: 90 * k + 12, lean: 14, amp: 16 * k, k: 1, sp: 6, ph: i * 2 + 1 }));
+  }
+
+  // bûche et pierres de devant
+  log(FX + 6, FY + 26, 280, 50, 0.05, 9);
+  for (const s of stones) if (Math.sin(s.an) >= 0) stone(s, f);
+
+  // braises
+  for (const e of embers) {
+    const u = ((t / T) * e.k + e.o) % 1;
+    const x = FX + e.x * (1 - u * 0.4) + e.sw * Math.sin(u * 7 + e.o * 9) + 70 * u * u, y = FY - 120 - u * e.h;
+    g.globalAlpha = Math.min(1, u * 8) * (1 - u); g.fillStyle = u < 0.4 ? C.yellow : C.orange;
+    g.save(); g.translate(x, y); g.rotate(0.785); g.fillRect(-e.s / 2, -e.s / 2, e.s, e.s); g.restore();
+  }
+  g.globalAlpha = 1;
+
+  // herbes de dune au premier plan, éclairées par le feu sur leur bord
+  for (const b of grass) {
+    const sw = 22 * Math.sin(w(1, t) + b.p) + 8 * Math.sin(w(2, t) + b.p * 2);
+    const tx = b.x + b.lean + sw, ty = H - b.h, mx = b.x + b.lean * 0.15, my = H - b.h * 0.6;
+    g.fillStyle = '#120726'; g.beginPath(); g.moveTo(b.x - b.wd, H + 10); g.quadraticCurveTo(mx - b.wd * 0.6, my, tx, ty);
+    g.quadraticCurveTo(mx + b.wd * 0.6, my, b.x + b.wd, H + 10); g.closePath(); g.fill();
+    g.strokeStyle = '#ff8a3a'; g.lineWidth = 2.5; g.globalAlpha = 0.5 * f;
+    g.beginPath(); g.moveTo(b.x - b.wd, H + 10); g.quadraticCurveTo(mx - b.wd * 0.6, my, tx, ty); g.stroke(); g.globalAlpha = 1;
+  }
+  // coins assombris, pour ramener l'œil sur le feu
+  const vg = g.createRadialGradient(W / 2, H * 0.6, 520, W / 2, H * 0.6, 1300);
+  vg.addColorStop(0, 'rgba(8,3,30,0)'); vg.addColorStop(1, 'rgba(8,3,30,0.6)');
+  g.fillStyle = vg; g.fillRect(0, 0, W, H);
+
+  // grain d'impression sur toute l'image
+  const r = rng(fi * 31 + 5);
+  g.fillStyle = '#ffffff'; g.globalAlpha = 0.05;
+  for (let i = 0; i < 2600; i++) g.fillRect(r() * W, r() * H, 3, 3);
+  g.fillStyle = '#000000'; g.globalAlpha = 0.09;
+  for (let i = 0; i < 2600; i++) g.fillRect(r() * W, r() * H, 3, 3);
+  g.globalAlpha = 1;
+
+  if (!HT) requestAnimationFrame(draw);
+}
+const HT = /t=([\d.]+)/.exec(location.hash);
+if (HT) draw(parseFloat(HT[1]) * 1000); else requestAnimationFrame(draw);
+</script>
+</body>
+</html>

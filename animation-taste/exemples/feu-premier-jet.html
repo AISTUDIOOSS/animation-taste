@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feu de camp</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas {
+    display: block;
+    width: min(100vw, calc(100vh * 9 / 16));
+    height: min(100vh, calc(100vw * 16 / 9));
+    outline: 1px solid #262626;
+    background: #000;
+  }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+(function () {
+  var W = 1080, H = 1920, T = 12, TAU = Math.PI * 2;
+  var cv = document.getElementById('c'), g = cv.getContext('2d');
+  var HOR = 980, SHORE = 1320, FX = 540, FY = 1590;
+
+  // deterministic random, so the loop is identical every time
+  var seed = 20261121;
+  function rnd() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    var r = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    r = r + Math.imul(r ^ r >>> 7, 61 | r) ^ r;
+    return ((r ^ r >>> 14) >>> 0) / 4294967296;
+  }
+  function pick(a) { return a[Math.floor(rnd() * a.length)]; }
+  // w(k, t): phase that completes k whole turns per loop
+  function w(k, t) { return TAU * k * t / T; }
+
+  // ---------- static data ----------
+  var stars = [];
+  for (var i = 0; i < 260; i++) {
+    var sy = Math.pow(rnd(), 1.3) * (HOR - 30);
+    stars.push({ x: rnd() * W, y: sy, r: 0.6 + Math.pow(rnd(), 3) * 2.4,
+      k: 1 + Math.floor(rnd() * 7), ph: rnd() * TAU, a: 0.35 + rnd() * 0.65,
+      warm: rnd() < 0.15 });
+  }
+
+  var flames = [];
+  for (i = 0; i < 170; i++) {
+    var a = (rnd() + rnd() + rnd()) / 1.5 - 1; // centred spread, -1..1
+    flames.push({ a: a, L: T / pick([8, 10, 12, 15, 16, 20]), off: rnd() * T,
+      h: (300 + rnd() * 260) * (1 - 0.55 * Math.abs(a)), ph: rnd() * TAU,
+      r: 46 + rnd() * 34, sw: 10 + rnd() * 26 });
+  }
+  var sparks = [];
+  for (i = 0; i < 46; i++) {
+    sparks.push({ a: rnd() * 2 - 1, L: T / pick([2, 3, 4, 4, 6]), off: rnd() * T,
+      h: 450 + rnd() * 650, ph: rnd() * TAU, sw: 20 + rnd() * 60,
+      r: 1.6 + rnd() * 2.4, drift: 40 + rnd() * 160 });
+  }
+  var smoke = [];
+  for (i = 0; i < 18; i++) {
+    smoke.push({ a: rnd() * 2 - 1, L: T / pick([2, 3]), off: rnd() * T,
+      ph: rnd() * TAU, r: 60 + rnd() * 50 });
+  }
+
+  // sand grain texture, drawn once
+  var sandTex = document.createElement('canvas');
+  sandTex.width = W; sandTex.height = H - 1200;
+  (function () {
+    var s = sandTex.getContext('2d');
+    for (var i = 0; i < 9000; i++) {
+      var y = rnd() * sandTex.height;
+      var l = rnd();
+      s.fillStyle = l > 0.5 ? 'rgba(255,240,215,' + (0.03 + rnd() * 0.07) + ')'
+                            : 'rgba(0,0,0,' + (0.05 + rnd() * 0.12) + ')';
+      var sz = 1 + rnd() * 2.2 * (0.5 + y / sandTex.height);
+      s.fillRect(rnd() * W, y, sz, sz * 0.6);
+    }
+    // soft dunes / footprints of shadow
+    for (i = 0; i < 26; i++) {
+      var dx = rnd() * W, dy = 120 + rnd() * (sandTex.height - 140), dw = 60 + rnd() * 200;
+      var gr = s.createRadialGradient(dx, dy, 0, dx, dy, dw);
+      gr.addColorStop(0, 'rgba(0,0,0,0.10)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+      s.save(); s.translate(dx, dy); s.scale(1, 0.22); s.translate(-dx, -dy);
+      s.fillStyle = gr; s.beginPath(); s.arc(dx, dy, dw, 0, TAU); s.fill(); s.restore();
+    }
+  })();
+
+  var stones = [];
+  for (i = 0; i < 13; i++) {
+    var an = i / 13 * TAU + 0.2;
+    stones.push({ an: an, rx: 30 + rnd() * 16, ry: 20 + rnd() * 10, rot: rnd() * 0.6 - 0.3,
+      sh: 0.8 + rnd() * 0.4 });
+  }
+  stones.sort(function (p, q) { return Math.sin(p.an) - Math.sin(q.an); });
+
+  // ---------- helpers ----------
+  function flicker(t) {
+    return 0.86 + 0.07 * Math.sin(w(7, t)) + 0.045 * Math.sin(w(13, t) + 1.3)
+         + 0.03 * Math.sin(w(23, t) + 2.1) + 0.02 * Math.sin(w(37, t) + 0.4);
+  }
+  function shoreY(x, t) {
+    return SHORE + 34 * Math.sin(w(2, t)) + 12 * Math.sin(x * 0.007 + w(3, t))
+         + 7 * Math.sin(x * 0.019 - w(5, t)) + 0.035 * (x - 540);
+  }
+  function blob(x, y, r, c0, c1) {
+    var gr = g.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, c0); gr.addColorStop(1, c1);
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  }
+
+  // ---------- layers ----------
+  function sky(t) {
+    var gr = g.createLinearGradient(0, 0, 0, HOR);
+    gr.addColorStop(0, '#03040c'); gr.addColorStop(0.45, '#081028');
+    gr.addColorStop(0.85, '#132346'); gr.addColorStop(1, '#22365c');
+    g.fillStyle = gr; g.fillRect(0, 0, W, HOR + 2);
+
+    // faint milky band
+    g.save(); g.translate(380, 380); g.rotate(-0.6); g.scale(1, 0.22);
+    blob(0, 0, 900, 'rgba(150,170,230,0.10)', 'rgba(150,170,230,0)');
+    g.restore();
+
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      var tw = 0.55 + 0.45 * Math.sin(w(s.k, t) + s.ph);
+      var fade = Math.min(1, (HOR - s.y) / 260); // dimmer near the horizon
+      g.globalAlpha = s.a * tw * fade;
+      g.fillStyle = s.warm ? '#ffe2b8' : '#eaf0ff';
+      g.beginPath(); g.arc(s.x, s.y, s.r, 0, TAU); g.fill();
+      if (s.r > 2.3) {
+        g.globalAlpha *= 0.35;
+        g.fillRect(s.x - s.r * 4, s.y - 0.5, s.r * 8, 1);
+        g.fillRect(s.x - 0.5, s.y - s.r * 4, 1, s.r * 8);
+      }
+    }
+    g.globalAlpha = 1;
+
+    // shooting star, once per loop
+    var p = (t - 4.2) / 0.9;
+    if (p > 0 && p < 1) {
+      var x = 180 + p * 420, y = 170 + p * 190, al = Math.sin(p * Math.PI);
+      var lg = g.createLinearGradient(x - 150, y - 68, x, y);
+      lg.addColorStop(0, 'rgba(255,255,255,0)'); lg.addColorStop(1, 'rgba(255,255,255,' + al + ')');
+      g.strokeStyle = lg; g.lineWidth = 3; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(x - 150, y - 68); g.lineTo(x, y); g.stroke();
+    }
+
+    // moon
+    var mx = 800, my = 330;
+    blob(mx, my, 330, 'rgba(170,195,255,0.22)', 'rgba(170,195,255,0)');
+    blob(mx, my, 120, 'rgba(220,230,255,0.35)', 'rgba(220,230,255,0)');
+    g.fillStyle = '#f3f1e4'; g.beginPath(); g.arc(mx, my, 62, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(160,165,170,0.28)';
+    [[-20, -14, 15], [16, 10, 11], [-6, 26, 8], [26, -24, 7], [-32, 16, 6]].forEach(function (c) {
+      g.beginPath(); g.arc(mx + c[0], my + c[1], c[2], 0, TAU); g.fill();
+    });
+
+    // far headland on the horizon
+    g.fillStyle = '#060b18';
+    g.beginPath(); g.moveTo(0, HOR + 1);
+    g.lineTo(0, HOR - 46); g.quadraticCurveTo(90, HOR - 78, 190, HOR - 40);
+    g.quadraticCurveTo(270, HOR - 58, 340, HOR - 22); g.quadraticCurveTo(400, HOR - 8, 470, HOR + 1);
+    g.closePath(); g.fill();
+  }
+
+  function sea(t) {
+    var gr = g.createLinearGradient(0, HOR, 0, SHORE + 80);
+    gr.addColorStop(0, '#16284a'); gr.addColorStop(0.25, '#0c1a36'); gr.addColorStop(1, '#0a1730');
+    g.fillStyle = gr;
+    g.beginPath(); g.moveTo(0, HOR);
+    g.lineTo(W, HOR);
+    for (var x = W; x >= 0; x -= 20) g.lineTo(x, shoreY(x, t));
+    g.closePath(); g.fill();
+
+    // moonlight path on the water
+    g.save();
+    g.beginPath(); g.moveTo(0, HOR); g.lineTo(W, HOR);
+    for (x = W; x >= 0; x -= 20) g.lineTo(x, shoreY(x, t) - 6);
+    g.closePath(); g.clip();
+    for (var y = HOR + 4, n = 0; y < SHORE + 70; n++) {
+      var d = (y - HOR) / (SHORE - HOR);
+      var k = 1 + (n % 4);
+      var wd = (26 + d * 210) * (0.55 + 0.45 * Math.sin(n * 1.7 + w(k, t)));
+      var ox = Math.sin(n * 2.3 + w(k + 1, t)) * (8 + d * 50);
+      g.fillStyle = 'rgba(220,232,255,' + (0.5 - d * 0.32) + ')';
+      g.fillRect(800 - d * 60 + ox - wd / 2, y, wd, 2 + d * 4);
+      y += 6 + d * 16;
+    }
+    // scattered swell glints
+    for (n = 0; n < 60; n++) {
+      var gy = HOR + 10 + ((n * 97) % 330), gd = (gy - HOR) / 340;
+      var gx = ((n * 211) % W) + 60 * Math.sin(w(1, t) + n);
+      var ga = 0.10 * (0.5 + 0.5 * Math.sin(w(1 + n % 5, t) + n * 0.9));
+      g.fillStyle = 'rgba(190,210,255,' + ga + ')';
+      g.fillRect(gx, gy, 30 + gd * 120, 1.5 + gd * 3);
+    }
+    g.restore();
+  }
+
+  function sand(t, f) {
+    var gr = g.createLinearGradient(0, SHORE - 80, 0, H);
+    gr.addColorStop(0, '#1c2233'); gr.addColorStop(0.3, '#1d1c26'); gr.addColorStop(1, '#100e14');
+    g.fillStyle = gr; g.fillRect(0, SHORE - 90, W, H - SHORE + 90);
+    g.drawImage(sandTex, 0, 1200);
+
+    // wet sand band left behind by the wave, catching moonlight
+    var wet = g.createLinearGradient(0, SHORE - 60, 0, SHORE + 150);
+    wet.addColorStop(0, 'rgba(120,150,210,0.20)'); wet.addColorStop(1, 'rgba(120,150,210,0)');
+    g.fillStyle = wet; g.fillRect(0, SHORE - 60, W, 210);
+
+    // firelight on the sand
+    g.save(); g.globalCompositeOperation = 'lighter';
+    g.translate(FX, FY + 10); g.scale(1, 0.36);
+    blob(0, 0, 900 * f, 'rgba(255,140,40,' + (0.55 * f) + ')', 'rgba(255,90,20,0)');
+    blob(0, 0, 330 * f, 'rgba(255,200,110,' + (0.40 * f) + ')', 'rgba(255,160,60,0)');
+    g.restore();
+  }
+
+  function foam(t) {
+    // drawn after the sea so the lip of the wave sits on the sand
+    var x;
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    g.strokeStyle = 'rgba(235,242,255,0.75)'; g.lineWidth = 7;
+    g.beginPath();
+    for (x = -20; x <= W + 20; x += 20) {
+      var y = shoreY(x, t) + 2 * Math.sin(x * 0.09 + w(4, t));
+      if (x < 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.stroke();
+    g.strokeStyle = 'rgba(210,225,255,0.22)'; g.lineWidth = 22; g.stroke();
+    // inner foam streaks
+    for (var k = 1; k <= 3; k++) {
+      g.strokeStyle = 'rgba(225,235,255,' + (0.22 - k * 0.05) + ')'; g.lineWidth = 3;
+      g.setLineDash([60 + k * 30, 40 + k * 22]); g.lineDashOffset = k * 37;
+      g.beginPath();
+      for (x = -20; x <= W + 20; x += 20) {
+        var yy = shoreY(x, t) - k * 24 - 5 * Math.sin(x * 0.03 + w(k + 1, t) + k);
+        if (x < 0) g.moveTo(x, yy); else g.lineTo(x, yy);
+      }
+      g.stroke();
+    }
+    g.setLineDash([]);
+  }
+
+  function palm(t) {
+    var sway = Math.sin(w(1, t)) * 0.035 + Math.sin(w(3, t) + 1) * 0.012;
+    var bx = -30, by = 1500, cx = 250 + sway * 500, cy = 640;
+    g.strokeStyle = '#04050a'; g.fillStyle = '#04050a'; g.lineCap = 'round';
+    // tapered trunk
+    g.beginPath();
+    g.moveTo(bx - 34, by);
+    g.quadraticCurveTo(40, 1050, cx - 11, cy);
+    g.lineTo(cx + 11, cy);
+    g.quadraticCurveTo(120, 1060, bx + 44, by);
+    g.closePath(); g.fill();
+    g.beginPath(); g.arc(cx, cy + 6, 22, 0, TAU); g.fill();
+    // fronds
+    var fr = [[-2.75, 330], [-2.2, 370], [-1.65, 340], [-1.1, 380], [-0.55, 400], [0.0, 390], [0.5, 330], [3.5, 280]];
+    for (var i = 0; i < fr.length; i++) {
+      var a = fr[i][0] + sway * (1.5 + i * 0.25) + 0.02 * Math.sin(w(2, t) + i);
+      var L = fr[i][1];
+      var ex = cx + Math.cos(a) * L, ey = cy + Math.sin(a) * L * 0.8 + L * 0.42;
+      var mx = cx + Math.cos(a) * L * 0.55, my = cy + Math.sin(a) * L * 0.75 - 40;
+      g.lineWidth = 5; g.beginPath(); g.moveTo(cx, cy); g.quadraticCurveTo(mx, my, ex, ey); g.stroke();
+      // leaflets hanging from the rib
+      g.lineWidth = 3.2;
+      for (var s = 0.12; s < 1; s += 0.045) {
+        var u = 1 - s;
+        var px = u * u * cx + 2 * u * s * mx + s * s * ex;
+        var py = u * u * cy + 2 * u * s * my + s * s * ey;
+        var ll = 78 * Math.sin(s * Math.PI) + 14;
+        var dir = Math.cos(a) >= 0 ? 1 : -1;
+        var lx = dir * (10 + s * 16) + sway * 250 * s;
+        g.beginPath(); g.moveTo(px, py); g.lineTo(px + lx, py + ll); g.stroke();
+        g.beginPath(); g.moveTo(px, py); g.lineTo(px - lx * 0.6, py - ll * 0.22); g.stroke();
+      }
+    }
+  }
+
+  function stone(s, f, front) {
+    var x = FX + Math.cos(s.an) * 190, y = FY + 16 + Math.sin(s.an) * 62;
+    g.save(); g.translate(x, y); g.rotate(s.rot);
+    g.fillStyle = 'rgba(0,0,0,0.45)';
+    g.beginPath(); g.ellipse(Math.cos(s.an) * 14, s.ry * 0.7, s.rx * 1.1, s.ry * 0.5, 0, 0, TAU); g.fill();
+    // lit side faces the fire
+    var lx = -Math.cos(s.an) * s.rx, ly = -Math.sin(s.an) * s.ry - s.ry * 0.4;
+    var gr = g.createRadialGradient(lx, ly, 2, 0, 0, s.rx * 1.5);
+    var li = (front ? 0.35 : 1) * f * s.sh;
+    gr.addColorStop(0, 'rgb(' + Math.round(70 + 185 * li) + ',' + Math.round(55 + 95 * li) + ',' + Math.round(50 + 20 * li) + ')');
+    gr.addColorStop(0.55, 'rgb(' + Math.round(48 + 60 * li) + ',' + Math.round(40 + 22 * li) + ',42)');
+    gr.addColorStop(1, '#17151b');
+    g.fillStyle = gr;
+    g.beginPath(); g.ellipse(0, 0, s.rx, s.ry, 0, 0, TAU); g.fill();
+    g.restore();
+  }
+
+  function log(x, y, rot, len, th, f) {
+    g.save(); g.translate(x, y); g.rotate(rot);
+    var gr = g.createLinearGradient(0, -th / 2, 0, th / 2);
+    gr.addColorStop(0, 'rgb(' + Math.round(120 * f) + ',' + Math.round(58 * f) + ',22)');
+    gr.addColorStop(0.5, '#2a1710'); gr.addColorStop(1, '#0d0806');
+    g.fillStyle = gr;
+    g.beginPath();
+    g.moveTo(-len / 2, -th / 2); g.lineTo(len / 2, -th / 2);
+    g.ellipse(len / 2, 0, th * 0.3, th / 2, 0, -Math.PI / 2, Math.PI / 2);
+    g.lineTo(-len / 2, th / 2);
+    g.ellipse(-len / 2, 0, th * 0.3, th / 2, 0, Math.PI / 2, Math.PI * 1.5);
+    g.closePath(); g.fill();
+    // bark lines
+    g.strokeStyle = 'rgba(0,0,0,0.45)'; g.lineWidth = 2;
+    for (var i = -2; i <= 2; i++) {
+      g.beginPath(); g.moveTo(-len / 2 + 14, i * th * 0.17); g.lineTo(len / 2 - 22 - (i & 1) * 30, i * th * 0.17 + 2); g.stroke();
+    }
+    // cut end
+    g.fillStyle = '#5a3a22';
+    g.beginPath(); g.ellipse(len / 2, 0, th * 0.3, th / 2, 0, 0, TAU); g.fill();
+    g.strokeStyle = 'rgba(30,15,8,0.7)'; g.lineWidth = 1.5;
+    g.beginPath(); g.ellipse(len / 2, 0, th * 0.17, th * 0.28, 0, 0, TAU); g.stroke();
+    g.restore();
+  }
+
+  function embers(t, f) {
+    g.save(); g.globalCompositeOperation = 'lighter';
+    g.translate(FX, FY + 6); g.scale(1, 0.34);
+    blob(0, 0, 150, 'rgba(255,170,60,' + (0.9 * f) + ')', 'rgba(255,60,0,0)');
+    g.restore();
+    g.save(); g.globalCompositeOperation = 'lighter';
+    for (var i = 0; i < 22; i++) {
+      var a = i * 2.399, r = 18 + (i * 37) % 95;
+      var gl = 0.45 + 0.55 * Math.sin(w(2 + i % 5, t) + i * 1.3);
+      var x = FX + Math.cos(a) * r, y = FY + 8 + Math.sin(a) * r * 0.3;
+      blob(x, y, 9 + (i % 4) * 3, 'rgba(255,' + Math.round(120 + 90 * gl) + ',40,' + (0.75 * gl) + ')', 'rgba(255,60,0,0)');
+    }
+    g.restore();
+  }
+
+  function smokeLayer(t) {
+    for (var i = 0; i < smoke.length; i++) {
+      var s = smoke[i], p = ((t + s.off) % s.L) / s.L;
+      var x = FX + s.a * 40 + p * p * 260 + Math.sin(p * 5 + s.ph) * 50 * p;
+      var y = FY - 330 - p * 820;
+      var al = Math.sin(p * Math.PI) * 0.075;
+      blob(x, y, s.r * (0.7 + p * 2.6), 'rgba(150,150,170,' + al + ')', 'rgba(150,150,170,0)');
+    }
+  }
+
+  function fire(t, f) {
+    g.save(); g.globalCompositeOperation = 'lighter';
+    // big halo in the air
+    blob(FX, FY - 170, 620 * f, 'rgba(255,120,30,' + (0.22 * f) + ')', 'rgba(255,90,20,0)');
+
+    for (var i = 0; i < flames.length; i++) {
+      var q = flames[i], p = ((t + q.off) % q.L) / q.L;
+      var u = 1 - p;
+      var x = FX + q.a * 105 * (0.25 + 0.75 * u * u) + Math.sin(p * 7 + q.ph) * q.sw * p + p * p * 26;
+      var y = FY - 12 - p * q.h * f;
+      var r = q.r * (0.35 + 0.95 * u) * (1 - 0.35 * Math.abs(q.a));
+      var al = Math.min(1, p * 9) * Math.pow(u, 1.25) * 0.42;
+      var hue = 46 - 40 * p, li = 62 - 22 * p;
+      blob(x, y, r, 'hsla(' + hue + ',100%,' + li + '%,' + al + ')', 'hsla(' + (hue - 12) + ',100%,40%,0)');
+    }
+    // hot core
+    g.translate(FX, FY - 55); g.scale(1, 1.5);
+    blob(0, 0, 78 * f, 'rgba(255,246,205,' + (0.75 * f) + ')', 'rgba(255,190,70,0)');
+    g.restore();
+
+    // sparks
+    g.save(); g.globalCompositeOperation = 'lighter';
+    for (i = 0; i < sparks.length; i++) {
+      var s = sparks[i], sp = ((t + s.off) % s.L) / s.L;
+      var sx = FX + s.a * 50 + Math.sin(sp * 9 + s.ph) * s.sw * sp + sp * sp * s.drift;
+      var sy = FY - 150 - (1 - Math.pow(1 - sp, 1.7)) * s.h;
+      var sa = Math.min(1, sp * 8) * Math.pow(1 - sp, 1.4) * (0.6 + 0.4 * Math.sin(sp * 40 + s.ph));
+      blob(sx, sy, s.r * 4, 'rgba(255,170,60,' + (0.45 * sa) + ')', 'rgba(255,90,0,0)');
+      g.fillStyle = 'rgba(255,225,160,' + sa + ')';
+      g.beginPath(); g.arc(sx, sy, s.r, 0, TAU); g.fill();
+    }
+    g.restore();
+  }
+
+  function vignette() {
+    var gr = g.createRadialGradient(W / 2, H * 0.62, 500, W / 2, H * 0.62, 1250);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.6)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  }
+
+  // animation volontairement basique : tout est figé, seul le feu "respire"
+  var T0 = 3.1;
+  function draw(t) {
+    var f = 0.86 + 0.12 * Math.sin(w(8, t)), i;
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+    sky(T0);
+    sand(T0, f);
+    sea(T0);
+    foam(T0);
+    palm(T0);
+    for (i = 0; i < stones.length; i++) if (Math.sin(stones[i].an) < 0) stone(stones[i], f, false);
+    log(FX - 62, FY - 2, 0.30, 270, 44, f);
+    log(FX + 62, FY - 2, -0.34, 270, 44, f);
+    embers(T0, f);
+    log(FX + 4, FY + 22, 0.04, 250, 40, f);
+    smokeLayer(T0);
+    fire(T0, f);
+    for (i = 0; i < stones.length; i++) if (Math.sin(stones[i].an) >= 0) stone(stones[i], f, true);
+    vignette();
+  }
+
+  function frame(now) {
+    draw((now / 1000) % T);
+    requestAnimationFrame(frame);
+  }
+  var HT = /t=([\d.]+)/.exec(location.hash);
+  if (HT) draw(parseFloat(HT[1])); else requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
